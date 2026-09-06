@@ -1,133 +1,18 @@
-use bevy::prelude::*;
+use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*, window::{CursorGrabMode, CursorOptions},};
 
-const CHUNK_SIZE: usize = 16;
+mod terrain;
+use crate::terrain::{CHUNK_SIZE, generate_terrain, build_chunk_mesh};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Voxel {
-    Air,
-    Solid(u8),
-}
 
-#[derive(Component)]
-pub struct Chunk {
-    pub voxels: Vec<Voxel>, // array of voxel data
-    pub position: IVec3,    // chunk location
-}
 
-impl Chunk {
-    fn index(x: usize, y: usize, z: usize) -> usize {
-        x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE
-    }
-
-    pub fn get(&self, x: i32, y: i32, z: i32) -> Voxel {
-        if x < 0
-            || y < 0
-            || z < 0
-            || x >= CHUNK_SIZE as i32
-            || y >= CHUNK_SIZE as i32
-            || z >= CHUNK_SIZE as i32
-        {
-            return Voxel::Air; // temporarily just give air
-        }
-        self.voxels[Self::index(x as usize, y as usize, z as usize)]
-    }
-}
-
-use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-
-// face direction (same as normal but used for face culling), local space face coords, normals (ready for wgsl as f32)
-const FACES: [(IVec3, [[f32; 3]; 4], [f32; 3]); 6] = [
-    (
-        IVec3::new(1, 0, 0),
-        [[1., 0., 0.], [1., 1., 0.], [1., 1., 1.], [1., 0., 1.]],
-        [1., 0., 0.],
-    ), // +X
-    (
-        IVec3::new(-1, 0, 0),
-        [[0., 0., 1.], [0., 1., 1.], [0., 1., 0.], [0., 0., 0.]],
-        [-1., 0., 0.],
-    ), // -X
-    (
-        IVec3::new(0, 1, 0),
-        [[0., 1., 0.], [0., 1., 1.], [1., 1., 1.], [1., 1., 0.]],
-        [0., 1., 0.],
-    ), // +Y
-    (
-        IVec3::new(0, -1, 0),
-        [[0., 0., 1.], [0., 0., 0.], [1., 0., 0.], [1., 0., 1.]],
-        [0., -1., 0.],
-    ), // -Y
-    (
-        IVec3::new(0, 0, 1),
-        [[1., 0., 1.], [1., 1., 1.], [0., 1., 1.], [0., 0., 1.]],
-        [0., 0., 1.],
-    ), // +Z
-    (
-        IVec3::new(0, 0, -1),
-        [[0., 0., 0.], [0., 1., 0.], [1., 1., 0.], [1., 0., 0.]],
-        [0., 0., -1.],
-    ), // -Z
-];
-
-pub fn build_chunk_mesh(chunk: &Chunk) -> Mesh {
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut uvs = Vec::new();
-    let mut indices = Vec::new();
-
-    for x in 0..CHUNK_SIZE {
-        for y in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
-                if chunk.get(x as i32, y as i32, z as i32) == Voxel::Air {
-                    continue;
-                }
-                for (dir, corners, normal) in FACES.iter() {
-                    let neighbour = chunk.get(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z);
-                    if neighbour != Voxel::Air {
-                        continue;
-                    }
-                    let base = positions.len() as u32;
-                    for corner in corners {
-                        positions.push([
-                            corner[0] + x as f32,
-                            corner[1] + y as f32,
-                            corner[2] + z as f32,
-                        ]);
-                        normals.push(*normal);
-                        uvs.push([0.0, 0.0]); // sort later
-                    }
-                    indices.extend_from_slice(&[
-                        base,
-                        base + 1,
-                        base + 2,
-                        base,
-                        base + 2,
-                        base + 3,
-                    ]);
-                }
-            }
-        }
-    }
-    Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-    .with_inserted_indices(Indices::U32(indices))
-}
-
+// spawn the chunk into the world
 fn spawn_chunk(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let chunk = Chunk {
-        voxels: vec![Voxel::Solid(1); CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE],
-        position: IVec3::ZERO,
-    };
+    
+    let chunk = generate_terrain(IVec3::ZERO, 0);
     let mesh = build_chunk_mesh(&chunk);
 
     commands.spawn((
@@ -137,6 +22,92 @@ fn spawn_chunk(
         chunk,
     ));
 }
+
+// camera
+
+
+#[derive(Debug, Component, Deref, DerefMut)]
+struct CameraSensitivity(Vec2);
+
+impl Default for CameraSensitivity {
+    fn default() -> Self {
+        Self(
+            Vec2::new(0.003, 0.002),
+        )
+    }
+}
+
+fn spawn_camera(mut commands: Commands) {
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(CHUNK_SIZE as f32 + 10.0, CHUNK_SIZE as f32 + 10.0, CHUNK_SIZE as f32 + 10.0).looking_at(Vec3::new(8.0, 8.0, 8.0), Vec3::Y),
+        CameraSensitivity::default(),
+    ));
+}
+
+use std::f32::consts::FRAC_PI_2;
+// move camera based on inputs
+// https://bevy.org/examples/camera/first-person-view-model/
+fn move_camera(
+    mut camera_query: Single<(&mut Transform, &CameraSensitivity), With<Camera3d>>,
+    accumulated_mouse_motion: Res<AccumulatedMouseMotion>,
+    time: Res<Time>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    
+) {
+
+    // rotation (looking at)
+    let (mut transform, camera_sensitivity) = camera_query.into_inner();
+    let delta = accumulated_mouse_motion.delta;
+
+    if delta != Vec2::ZERO {
+        let delta_yaw = -delta.x * camera_sensitivity.x;
+        let delta_pitch = -delta.y * camera_sensitivity.y;
+
+        let (yaw, pitch, roll) = transform.rotation.to_euler(EulerRot::YXZ);
+        let yaw = yaw + delta_yaw;
+
+        const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.01;
+        let pitch = (pitch + delta_pitch).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+
+        transform.rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
+    }
+
+    // translation
+
+    // determine which way the camera is facing
+    let forward = *transform.forward();
+    let right = *transform.right();
+
+    let mut direction = Vec3::ZERO;
+    if keyboard_input.pressed(KeyCode::KeyW) { direction += forward; }
+    if keyboard_input.pressed(KeyCode::KeyS) { direction -= forward; }
+    if keyboard_input.pressed(KeyCode::KeyD) { direction += right; }
+    if keyboard_input.pressed(KeyCode::KeyA) { direction -= right; }
+
+    let speed = 8.0;
+    transform.translation += direction.normalize_or_zero() * speed * time.delta_secs();
+
+}
+
+fn grab_mouse(
+    mut cursor_options: Single<&mut CursorOptions>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    key: Res<ButtonInput<KeyCode>>,
+) {
+    if mouse.just_pressed(MouseButton::Left) {
+        cursor_options.visible = false;
+        cursor_options.grab_mode = CursorGrabMode::Locked;
+    }
+
+    if key.just_pressed(KeyCode::Escape) {
+        cursor_options.visible = true;
+        cursor_options.grab_mode = CursorGrabMode::None;
+    }
+}
+
+
+
 
 fn setup(
     mut commands: Commands,
@@ -152,16 +123,11 @@ fn setup(
     ));
 }
 
-fn spawn_camera(mut commands: Commands) {
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(24.0, 24.0, 24.0).looking_at(Vec3::new(8.0, 8.0, 8.0), Vec3::Y),
-    ));
-}
-
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_systems(Startup, setup)
+        .add_systems(Update, move_camera)
+        .add_systems(Update, grab_mouse)
         .run();
 }
