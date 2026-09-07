@@ -49,17 +49,20 @@ impl Chunk {
 
 // noise
 
-use noise::{NoiseFn, Perlin, Seedable};
+use noise::{NoiseFn, Perlin, Fbm, MultiFractal, Seedable};
 
 #[derive(Resource)]
 pub struct TerrainNoise {
-    pub perlin: Perlin
+    pub perlin: Perlin,
+    pub fbm: Fbm<Perlin>,
 }
 
 impl TerrainNoise {
     pub fn new(seed: u32) -> Self {
         Self {
             perlin: Perlin::new(seed),
+            fbm: Fbm::<Perlin>::new(seed)
+                .set_frequency(0.1)
         }
     }
 }
@@ -70,11 +73,13 @@ pub fn setup_terrain_noise(mut commands: Commands) {
 
 // helper function to determine height of terrain
 pub fn height_at(noise: &TerrainNoise, x: f32, z: f32) -> f32 {
-    let scale = 0.05;   // lower = broader, smoother hills
-    let amplitude = 12.0;
-    let val = noise.perlin.get([(x * scale) as f64, (z * scale) as f64]) as f32;
+
+    let amplitude = 10.0;
+    let val = noise.fbm.get([x as f64, z as f64]) as f32;
     SEA_LEVEL + val * amplitude
 }
+
+
 
 pub fn generate_terrain(chunk_position: IVec3, seed: u32, terrain_noise: &TerrainNoise) -> Chunk {
 
