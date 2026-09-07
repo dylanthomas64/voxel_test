@@ -46,15 +46,38 @@ impl Chunk {
     }
 }
 
-// helper function to determine height of terrain for sine based chunk generation
-pub fn height_at_sin(x: f32, z: f32) -> f32 {
-    let amplitude: f32 = 6.0;
-    let frequency: f32 = 0.4;
 
-    SEA_LEVEL + amplitude * (x * frequency).sin() * (z * frequency).cos()
+// noise
+
+use noise::{NoiseFn, Perlin, Seedable};
+
+#[derive(Resource)]
+pub struct TerrainNoise {
+    pub perlin: Perlin
 }
 
-pub fn generate_terrain(chunk_position: IVec3, seed: u32) -> Chunk {
+impl TerrainNoise {
+    pub fn new(seed: u32) -> Self {
+        Self {
+            perlin: Perlin::new(seed),
+        }
+    }
+}
+
+pub fn setup_terrain_noise(mut commands: Commands) {
+    commands.insert_resource(TerrainNoise::new(0));
+}
+
+// helper function to determine height of terrain
+pub fn height_at(noise: &TerrainNoise, x: f32, z: f32) -> f32 {
+    let scale = 0.05;   // lower = broader, smoother hills
+    let amplitude = 12.0;
+    let val = noise.perlin.get([(x * scale) as f64, (z * scale) as f64]) as f32;
+    SEA_LEVEL + val * amplitude
+}
+
+pub fn generate_terrain(chunk_position: IVec3, seed: u32, terrain_noise: &TerrainNoise) -> Chunk {
+
     // create a cube of air voxels of volume CHUNK_SIZE**3
     let mut voxels = vec![Voxel::Air; CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
     const DIRT_DEPTH: i32 = 3;
@@ -69,17 +92,12 @@ pub fn generate_terrain(chunk_position: IVec3, seed: u32) -> Chunk {
             for local_y in 0..CHUNK_SIZE {
                 let world_y = (chunk_position.y * CHUNK_SIZE as i32 + local_y as i32) as f32;
                 // calculate the surface of the terrain (height)
-                let d = density_at(Vec3::new(world_x, world_y, world_z), 8.0, seed);
+                let height = height_at(terrain_noise, world_x, world_z);
                 let idx = local_x + local_y * CHUNK_SIZE + local_z * CHUNK_SIZE * CHUNK_SIZE;
-                voxels[idx] = if d > 0.0 {
+                voxels[idx] = if world_y < height {
                     Voxel::Solid(BlockType::Stone)
                 } else {
-                    if world_y <= SEA_LEVEL {
-                        Voxel::Solid(BlockType::Water)
-                    } else {
-                        Voxel::Air
-                    }
-                    
+                    Voxel::Air
                 };
             }
         }
@@ -202,9 +220,10 @@ pub fn spawn_chunk(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    terrain_noise: Res<TerrainNoise>,
 ) {
     let seed: u32 = 0;
-    let render_distance = 1;
+    let render_distance = 0;
 
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 1.0, 1.0),
@@ -214,7 +233,7 @@ pub fn spawn_chunk(
     for cx in -render_distance..=render_distance {
         for cz in -render_distance..=render_distance {
             let chunk_position = IVec3::new(cx, 0, cz);
-            let chunk = generate_terrain(chunk_position, 0);
+            let chunk = generate_terrain(chunk_position, 0, &terrain_noise);
             let mesh = build_chunk_mesh(&chunk);
             let world_offset = (chunk_position * CHUNK_SIZE as i32).as_vec3();
             commands.spawn((
@@ -226,6 +245,8 @@ pub fn spawn_chunk(
         }
     }
 }
+
+
 
 // **************      claude voronoi test ***************************** ///
 
@@ -276,6 +297,7 @@ pub fn voronoi3d(pos: Vec3, cell_size: f32, seed: u32) -> (f32, f32) {
 
     (nearest, second)
 }
+
 
 /// Layered sine waves at different frequencies/amplitudes — each octave adds
 /// finer detail at lower strength, so you get big rolling shapes plus small bumps

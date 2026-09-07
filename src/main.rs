@@ -5,7 +5,7 @@ use bevy::{
 };
 
 mod terrain;
-use crate::terrain::{CHUNK_SIZE, spawn_chunk};
+use crate::terrain::{CHUNK_SIZE, TerrainNoise, setup_terrain_noise, spawn_chunk};
 
 // camera
 
@@ -106,9 +106,10 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    terrain_noise: Res<TerrainNoise>,
+
 ) {
     spawn_camera(commands.reborrow());
-    spawn_chunk(commands.reborrow(), meshes, materials);
     // spawn light as standard material requires it
     commands.spawn((
         DirectionalLight::default(),
@@ -119,7 +120,7 @@ fn setup(
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup_terrain_noise, setup, spawn_chunk).chain())
         .add_systems(Update, move_camera)
         .add_systems(Update, grab_mouse)
         .run();
