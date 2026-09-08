@@ -1,17 +1,29 @@
 use bevy::prelude::*;
 
-
+// chunk space constants
 pub const CHUNK_SIZE: usize = 32;
+
+// world space contstants
+pub const SEA_LEVEL: f32 = 0.0;
+pub const HEIGHT_LIMIT: usize = 80;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Voxel {
     Air,
-    Solid(u8),
+    Solid(BlockType),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BlockType {
+    Grass,
+    Dirt,
+    Stone,
+    Water,
 }
 
 #[derive(Component)]
 pub struct Chunk {
     pub voxels: Vec<Voxel>, // array of voxel data
-    pub position: IVec3,    // chunk location
 }
 
 impl Chunk {
@@ -33,35 +45,89 @@ impl Chunk {
     }
 }
 
+use std::collections::HashMap;
 
-// helper function to determine height of terrain for sine based chunk generation
-pub fn height_at_sin(x: f32, z: f32) -> f32 {
-    let amplitude: f32 = 6.0;
-    let frequency: f32 = 0.4;
-    let sea_level: f32 = 0.5 * CHUNK_SIZE as f32;
+#[derive(Resource, Default)]
+pub struct ChunkMap {
+    pub chunks: HashMap<IVec3, Chunk>,
+}
 
-    sea_level + amplitude * (x * frequency).sin() * (z * frequency).cos()
+// get voxel from neighbouring chunk
+pub fn get_voxel(chunk_map: &ChunkMap, chunk_pos: IVec3, local: IVec3) -> Voxel {
+    let mut neighbor_offset = IVec3::ZERO;
+    let mut wrapped = local;
+
+    for axis in 0..3 {
+        if wrapped[axis] < 0 {
+            neighbor_offset[axis] = -1;
+            wrapped[axis] += CHUNK_SIZE as i32;
+        } else if wrapped[axis] >= CHUNK_SIZE as i32 {
+            neighbor_offset[axis] = 1;
+            wrapped[axis] -= CHUNK_SIZE as i32;
+        }
+    }
+
+    let target_chunk_pos = chunk_pos + neighbor_offset;
+
+    match chunk_map.chunks.get(&target_chunk_pos) {
+        Some(chunk) => chunk.get(wrapped.x, wrapped.y, wrapped.z),
+        None => Voxel::Air, // neighbour not generated (yet) — treat as open air
+    }
 }
 
 
-pub fn generate_terrain(chunk_position: IVec3, _seed: u32) -> Chunk {
+// noise
+
+use noise::{NoiseFn, Perlin, Fbm, MultiFractal};
+
+#[derive(Resource)]
+pub struct TerrainNoise {
+    pub _perlin: Perlin,
+    pub fbm: Fbm<Perlin>,
+}
+
+impl TerrainNoise {
+    pub fn new(seed: u32) -> Self {
+        Self {
+            _perlin: Perlin::new(seed),
+            fbm: Fbm::<Perlin>::new(seed)
+                .set_frequency(0.005)
+        }
+    }
+}
+
+pub fn setup_terrain_noise(mut commands: Commands) {
+    commands.insert_resource(TerrainNoise::new(0));
+}
+
+// helper function to determine height of terrain
+pub fn height_at(noise: &TerrainNoise, x: f32, z: f32) -> f32 {
+    let amplitude= 2.0 * CHUNK_SIZE as f32;
+    let val = noise.fbm.get([x as f64, z as f64]) as f32;
+    SEA_LEVEL + val * amplitude
+}
+
+
+
+pub fn generate_terrain(chunk_position: IVec3, terrain_noise: &TerrainNoise) -> Chunk {
+
     // create a cube of air voxels of volume CHUNK_SIZE**3
     let mut voxels = vec![Voxel::Air; CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
-    let position = IVec3::ZERO;
-
 
     // create terrain by adding solid blocks within a specified criteria eg. height (y)
 
     for local_x in 0..CHUNK_SIZE {
-        for local_z in 0.. CHUNK_SIZE {
-            let world_x = (position.x * CHUNK_SIZE as i32 + local_x as i32) as f32;
-            let world_z = (position.z * CHUNK_SIZE as i32 + local_z as i32) as f32;
+        for local_z in 0..CHUNK_SIZE {
+            let world_x = (chunk_position.x * CHUNK_SIZE as i32 + local_x as i32) as f32;
+            let world_z = (chunk_position.z * CHUNK_SIZE as i32 + local_z as i32) as f32;
 
             for local_y in 0..CHUNK_SIZE {
-                let world_y = (position.y * CHUNK_SIZE as i32 + local_y as i32) as f32;
+                let world_y = (chunk_position.y * CHUNK_SIZE as i32 + local_y as i32) as f32;
+                // calculate the surface of the terrain (height)
+                let height = height_at(terrain_noise, world_x, world_z);
                 let idx = local_x + local_y * CHUNK_SIZE + local_z * CHUNK_SIZE * CHUNK_SIZE;
-                voxels[idx] = if world_y < height_at_sin(world_x, world_z) {
-                    Voxel::Solid(1)
+                voxels[idx] = if world_y < height {
+                    Voxel::Solid(BlockType::Stone)
                 } else {
                     Voxel::Air
                 };
@@ -70,13 +136,9 @@ pub fn generate_terrain(chunk_position: IVec3, _seed: u32) -> Chunk {
     }
 
     Chunk {
-        voxels: voxels,
-        position: chunk_position,
+        voxels,
     }
 }
-
-
-
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
@@ -115,25 +177,69 @@ const FACES: [(IVec3, [[f32; 3]; 4], [f32; 3]); 6] = [
     ), // -Z
 ];
 
+//help functino to convert voxel type to a colour
+fn palette_color(voxel: Voxel) -> [f32; 4] {
+    match voxel {
+        Voxel::Air => [0.0, 0.0, 0.0, 0.0], // never actually reached — Air voxels get `continue`d before this is called
+        Voxel::Solid(BlockType::Grass) => [0.42, 0.62, 0.26, 1.0],
+        Voxel::Solid(BlockType::Dirt) => [0.40, 0.29, 0.18, 1.0],
+        Voxel::Solid(BlockType::Stone) => [0.55, 0.55, 0.55, 1.0],
+        Voxel::Solid(BlockType::Water) => [0.1, 0.1, 0.988, 0.3],
+        // ...one arm per block type
+    }
+}
+
+use bevy::color::{Hsla, Srgba};
+use rand::RngExt;
+
+fn jitter_colour(rgba: [f32; 4], rng: &mut impl RngExt) -> [f32; 4] {
+
+    let mut hsla: Hsla = Srgba::from_f32_array(rgba).into();
+
+    let lightness_shift = rng.random_range(-0.05f32..=0.05);
+    if lightness_shift >= 0.0 {
+        hsla = hsla.lighter(lightness_shift)
+    } else {
+        hsla = hsla.darker(-lightness_shift)
+    };
+
+    
+    hsla.saturation = (hsla.saturation + rng.random_range(-0.1f32..=0.1)).clamp(0.0, 1.0);
+    let out: Srgba = hsla.into();
+    out.to_f32_array()
+}
+
 // convert chunk to a single mesh (greedily)
-pub fn build_chunk_mesh(chunk: &Chunk) -> Mesh {
+pub fn build_chunk_mesh(chunk_map: &ChunkMap, chunk_pos: IVec3) -> Mesh {
+
+    let mut rng = rand::rng();
+
+    let chunk = chunk_map.chunks.get(&chunk_pos).expect("chunk must exist to be meshed");
+
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
+    let mut colours = Vec::new();
     let mut indices = Vec::new();
 
     for x in 0..CHUNK_SIZE {
         for y in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
-                if chunk.get(x as i32, y as i32, z as i32) == Voxel::Air {
+                let voxel = chunk.get(x as i32, y as i32, z as i32);
+                if voxel == Voxel::Air {
                     continue;
                 }
                 for (dir, corners, normal) in FACES.iter() {
-                    let neighbour = chunk.get(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z);
+                    // local chunk coordinate NOTE: this can be outside of the CHUNK_SIZE range
+                    let local_coord = IVec3::new(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z);
+                    let neighbour = get_voxel(chunk_map, chunk_pos, local_coord);
                     if neighbour != Voxel::Air {
                         continue;
                     }
                     let base = positions.len() as u32;
+                    let mut colour = palette_color(voxel);
+                    colour = jitter_colour(colour, &mut rng);
+
                     for corner in corners {
                         positions.push([
                             corner[0] + x as f32,
@@ -142,6 +248,7 @@ pub fn build_chunk_mesh(chunk: &Chunk) -> Mesh {
                         ]);
                         normals.push(*normal);
                         uvs.push([0.0, 0.0]); // sort later
+                        colours.push(colour)
                     }
                     indices.extend_from_slice(&[
                         base,
@@ -162,5 +269,55 @@ pub fn build_chunk_mesh(chunk: &Chunk) -> Mesh {
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    // colour will be blended with base_colour by standard material
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colours)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+// spawn the chunk into the world
+pub fn spawn_chunk(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    terrain_noise: Res<TerrainNoise>,
+    mut chunk_map: ResMut<ChunkMap>,
+) {
+    let render_distance = 2;
+
+    // because building the chunks meshes relies on the neighbour chunks existing we must generate all the neighbouring chunks first
+
+    for cx in -render_distance..=render_distance {
+        for cz in -render_distance..=render_distance {
+            for cy in -render_distance..=render_distance {
+                let chunk_position = IVec3::new(cx, cy, cz);
+                let chunk = generate_terrain(chunk_position, &terrain_noise);
+                chunk_map.chunks.insert(chunk_position, chunk);
+            }
+        }
+    }
+
+
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 1.0, 1.0),
+        ..default()
+    });
+
+    for cx in -render_distance..=render_distance {
+        for cz in -render_distance..=render_distance {
+            for cy in -render_distance..=render_distance {
+                let chunk_position = IVec3::new(cx, cy, cz);
+                let mesh = build_chunk_mesh(&chunk_map, chunk_position);
+                // some chunks may be full air or stone and have no mesh, it'll work but bevy will complain so:
+                if mesh.count_vertices() == 0 {
+                    continue
+                }
+                let world_offset = (chunk_position * CHUNK_SIZE as i32).as_vec3();
+                commands.spawn((
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_translation(world_offset),
+            ));
+            }
+        }
+    }
 }

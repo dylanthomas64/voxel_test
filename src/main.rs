@@ -1,47 +1,37 @@
-use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*, window::{CursorGrabMode, CursorOptions},};
+use bevy::{
+    camera::Exposure, input::mouse::AccumulatedMouseMotion, prelude::*, window::{CursorGrabMode, CursorOptions},
+};
 
 mod terrain;
-use crate::terrain::{CHUNK_SIZE, generate_terrain, build_chunk_mesh};
-
-
-
-// spawn the chunk into the world
-fn spawn_chunk(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    
-    let chunk = generate_terrain(IVec3::ZERO, 0);
-    let mesh = build_chunk_mesh(&chunk);
-
-    commands.spawn((
-        Mesh3d(meshes.add(mesh)),
-        MeshMaterial3d(materials.add(Color::srgb(0.3, 0.6, 0.3))),
-        Transform::default(),
-        chunk,
-    ));
-}
+use crate::terrain::{CHUNK_SIZE, setup_terrain_noise, spawn_chunk};
 
 // camera
-
 
 #[derive(Debug, Component, Deref, DerefMut)]
 struct CameraSensitivity(Vec2);
 
 impl Default for CameraSensitivity {
     fn default() -> Self {
-        Self(
-            Vec2::new(0.003, 0.002),
-        )
+        Self(Vec2::new(0.003, 0.002))
     }
 }
 
 fn spawn_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(CHUNK_SIZE as f32 + 10.0, CHUNK_SIZE as f32 + 10.0, CHUNK_SIZE as f32 + 10.0).looking_at(Vec3::new(8.0, 8.0, 8.0), Vec3::Y),
+        Transform::from_xyz(
+            CHUNK_SIZE as f32 + 10.0,
+            CHUNK_SIZE as f32 + 10.0,
+            CHUNK_SIZE as f32 + 10.0,
+        )
+        .looking_at(Vec3::new(8.0, 8.0, 8.0), Vec3::Y),
         CameraSensitivity::default(),
+        Exposure { ev100: 9.5},
+        DistanceFog {
+            color: Color::srgb(0.7, 0.75, 0.8),
+            falloff: FogFalloff::Exponential { density: 0.01 },
+            ..default()
+        },
     ));
 }
 
@@ -49,13 +39,11 @@ use std::f32::consts::FRAC_PI_2;
 // move camera based on inputs
 // https://bevy.org/examples/camera/first-person-view-model/
 fn move_camera(
-    mut camera_query: Single<(&mut Transform, &CameraSensitivity), With<Camera3d>>,
+    camera_query: Single<(&mut Transform, &CameraSensitivity), With<Camera3d>>,
     accumulated_mouse_motion: Res<AccumulatedMouseMotion>,
     time: Res<Time>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    
 ) {
-
     // rotation (looking at)
     let (mut transform, camera_sensitivity) = camera_query.into_inner();
     let delta = accumulated_mouse_motion.delta;
@@ -80,14 +68,21 @@ fn move_camera(
     let right = *transform.right();
 
     let mut direction = Vec3::ZERO;
-    if keyboard_input.pressed(KeyCode::KeyW) { direction += forward; }
-    if keyboard_input.pressed(KeyCode::KeyS) { direction -= forward; }
-    if keyboard_input.pressed(KeyCode::KeyD) { direction += right; }
-    if keyboard_input.pressed(KeyCode::KeyA) { direction -= right; }
+    if keyboard_input.pressed(KeyCode::KeyW) {
+        direction += forward;
+    }
+    if keyboard_input.pressed(KeyCode::KeyS) {
+        direction -= forward;
+    }
+    if keyboard_input.pressed(KeyCode::KeyD) {
+        direction += right;
+    }
+    if keyboard_input.pressed(KeyCode::KeyA) {
+        direction -= right;
+    }
 
-    let speed = 8.0;
+    let speed = 32.0;
     transform.translation += direction.normalize_or_zero() * speed * time.delta_secs();
-
 }
 
 fn grab_mouse(
@@ -106,16 +101,11 @@ fn grab_mouse(
     }
 }
 
-
-
-
 fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+
 ) {
     spawn_camera(commands.reborrow());
-    spawn_chunk(commands.reborrow(), meshes, materials);
     // spawn light as standard material requires it
     commands.spawn((
         DirectionalLight::default(),
@@ -125,8 +115,9 @@ fn setup(
 
 fn main() {
     App::new()
+        .init_resource::<terrain::ChunkMap>()
         .add_plugins(DefaultPlugins)
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup_terrain_noise, setup, spawn_chunk).chain())
         .add_systems(Update, move_camera)
         .add_systems(Update, grab_mouse)
         .run();
