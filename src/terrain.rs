@@ -102,10 +102,18 @@ pub fn setup_terrain_noise(mut commands: Commands) {
 
 // helper function to determine height of terrain
 pub fn height_at(noise: &TerrainNoise, x: f32, z: f32) -> f32 {
+
+    // fbm
     let amplitude= 2.0 * CHUNK_SIZE as f32;
     let val = noise.fbm.get([x as f64, z as f64]) as f32;
-    SEA_LEVEL + val * amplitude
+    let fbm = val * amplitude;
+    let ridged = (1.0 - val.abs()) * amplitude;
+    fbm.lerp(ridged, noise._perlin.get([x as f64, z as f64]).clamp(0.0, 1.0) as f32)
 }
+// make gizmo actually make a plane mesh as it refreshes every fram otherwise......
+// ridged noise + fmb SEA_LEVEL + ((1.0 - val.abs()) * amplitude)
+// then hyrdaulic erosion
+
 
 
 
@@ -196,7 +204,7 @@ fn jitter_colour(rgba: [f32; 4], rng: &mut impl RngExt) -> [f32; 4] {
 
     let mut hsla: Hsla = Srgba::from_f32_array(rgba).into();
 
-    let lightness_shift = rng.random_range(-0.05f32..=0.05);
+    let lightness_shift = rng.random_range(-0.2f32..=0.2);
     if lightness_shift >= 0.0 {
         hsla = hsla.lighter(lightness_shift)
     } else {
@@ -204,7 +212,7 @@ fn jitter_colour(rgba: [f32; 4], rng: &mut impl RngExt) -> [f32; 4] {
     };
 
     
-    hsla.saturation = (hsla.saturation + rng.random_range(-0.1f32..=0.1)).clamp(0.0, 1.0);
+    hsla.saturation = (hsla.saturation + rng.random_range(-0.2f32..=0.2)).clamp(0.0, 1.0);
     let out: Srgba = hsla.into();
     out.to_f32_array()
 }
@@ -282,13 +290,14 @@ pub fn spawn_chunk(
     terrain_noise: Res<TerrainNoise>,
     mut chunk_map: ResMut<ChunkMap>,
 ) {
-    let render_distance = 2;
+    let xz_render_distance = 4;
+    let y_render_distance = 4;
 
     // because building the chunks meshes relies on the neighbour chunks existing we must generate all the neighbouring chunks first
 
-    for cx in -render_distance..=render_distance {
-        for cz in -render_distance..=render_distance {
-            for cy in -render_distance..=render_distance {
+    for cx in -xz_render_distance..=xz_render_distance {
+        for cz in -xz_render_distance..=xz_render_distance {
+            for cy in -y_render_distance..=y_render_distance {
                 let chunk_position = IVec3::new(cx, cy, cz);
                 let chunk = generate_terrain(chunk_position, &terrain_noise);
                 chunk_map.chunks.insert(chunk_position, chunk);
@@ -302,9 +311,9 @@ pub fn spawn_chunk(
         ..default()
     });
 
-    for cx in -render_distance..=render_distance {
-        for cz in -render_distance..=render_distance {
-            for cy in -render_distance..=render_distance {
+    for cx in -xz_render_distance..=xz_render_distance {
+        for cz in -xz_render_distance..=xz_render_distance {
+            for cy in -y_render_distance..=y_render_distance {
                 let chunk_position = IVec3::new(cx, cy, cz);
                 let mesh = build_chunk_mesh(&chunk_map, chunk_position);
                 // some chunks may be full air or stone and have no mesh, it'll work but bevy will complain so:

@@ -3,7 +3,7 @@ use bevy::{
 };
 
 mod terrain;
-use crate::terrain::{CHUNK_SIZE, setup_terrain_noise, spawn_chunk};
+use crate::terrain::{CHUNK_SIZE, SEA_LEVEL, setup_terrain_noise, spawn_chunk};
 
 // camera
 
@@ -101,6 +101,15 @@ fn grab_mouse(
     }
 }
 
+fn sea_level_gizmo( mut gizmos: Gizmos) {
+    gizmos.grid(
+      Isometry3d::new(Vec3::new(0.0, SEA_LEVEL, 0.0), Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+    UVec2::splat(300),
+    Vec2::splat(1.0),
+    Color::srgba(0.2, 0.6, 1.0, 0.5),
+    );
+}
+
 fn setup(
     mut commands: Commands,
 
@@ -120,5 +129,6 @@ fn main() {
         .add_systems(Startup, (setup_terrain_noise, setup, spawn_chunk).chain())
         .add_systems(Update, move_camera)
         .add_systems(Update, grab_mouse)
+        .add_systems(Update, sea_level_gizmo)
         .run();
 }
