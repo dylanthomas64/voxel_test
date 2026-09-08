@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 // chunk space constants
-pub const CHUNK_SIZE: usize = 64;
+pub const CHUNK_SIZE: usize = 32;
 
 // world space contstants
 pub const SEA_LEVEL: f32 = 0.0;
@@ -24,7 +24,6 @@ pub enum BlockType {
 #[derive(Component)]
 pub struct Chunk {
     pub voxels: Vec<Voxel>, // array of voxel data
-    pub position: IVec3,    // chunk location
 }
 
 impl Chunk {
@@ -46,23 +45,53 @@ impl Chunk {
     }
 }
 
+use std::collections::HashMap;
+
+#[derive(Resource, Default)]
+pub struct ChunkMap {
+    pub chunks: HashMap<IVec3, Chunk>,
+}
+
+// get voxel from neighbouring chunk
+pub fn get_voxel(chunk_map: &ChunkMap, chunk_pos: IVec3, local: IVec3) -> Voxel {
+    let mut neighbor_offset = IVec3::ZERO;
+    let mut wrapped = local;
+
+    for axis in 0..3 {
+        if wrapped[axis] < 0 {
+            neighbor_offset[axis] = -1;
+            wrapped[axis] += CHUNK_SIZE as i32;
+        } else if wrapped[axis] >= CHUNK_SIZE as i32 {
+            neighbor_offset[axis] = 1;
+            wrapped[axis] -= CHUNK_SIZE as i32;
+        }
+    }
+
+    let target_chunk_pos = chunk_pos + neighbor_offset;
+
+    match chunk_map.chunks.get(&target_chunk_pos) {
+        Some(chunk) => chunk.get(wrapped.x, wrapped.y, wrapped.z),
+        None => Voxel::Air, // neighbour not generated (yet) — treat as open air
+    }
+}
+
 
 // noise
 
-use noise::{NoiseFn, Perlin, Fbm, MultiFractal, Seedable};
+use noise::{NoiseFn, Perlin, Fbm, MultiFractal};
 
 #[derive(Resource)]
 pub struct TerrainNoise {
-    pub perlin: Perlin,
+    pub _perlin: Perlin,
     pub fbm: Fbm<Perlin>,
 }
 
 impl TerrainNoise {
     pub fn new(seed: u32) -> Self {
         Self {
-            perlin: Perlin::new(seed),
+            _perlin: Perlin::new(seed),
             fbm: Fbm::<Perlin>::new(seed)
-                .set_frequency(0.1)
+                .set_frequency(0.005)
         }
     }
 }
@@ -73,19 +102,17 @@ pub fn setup_terrain_noise(mut commands: Commands) {
 
 // helper function to determine height of terrain
 pub fn height_at(noise: &TerrainNoise, x: f32, z: f32) -> f32 {
-
-    let amplitude = 10.0;
+    let amplitude= 2.0 * CHUNK_SIZE as f32;
     let val = noise.fbm.get([x as f64, z as f64]) as f32;
     SEA_LEVEL + val * amplitude
 }
 
 
 
-pub fn generate_terrain(chunk_position: IVec3, seed: u32, terrain_noise: &TerrainNoise) -> Chunk {
+pub fn generate_terrain(chunk_position: IVec3, terrain_noise: &TerrainNoise) -> Chunk {
 
     // create a cube of air voxels of volume CHUNK_SIZE**3
     let mut voxels = vec![Voxel::Air; CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
-    const DIRT_DEPTH: i32 = 3;
 
     // create terrain by adding solid blocks within a specified criteria eg. height (y)
 
@@ -109,8 +136,7 @@ pub fn generate_terrain(chunk_position: IVec3, seed: u32, terrain_noise: &Terrai
     }
 
     Chunk {
-        voxels: voxels,
-        position: chunk_position,
+        voxels,
     }
 }
 
@@ -163,8 +189,33 @@ fn palette_color(voxel: Voxel) -> [f32; 4] {
     }
 }
 
+use bevy::color::{Hsla, Srgba};
+use rand::RngExt;
+
+fn jitter_colour(rgba: [f32; 4], rng: &mut impl RngExt) -> [f32; 4] {
+
+    let mut hsla: Hsla = Srgba::from_f32_array(rgba).into();
+
+    let lightness_shift = rng.random_range(-0.05f32..=0.05);
+    if lightness_shift >= 0.0 {
+        hsla = hsla.lighter(lightness_shift)
+    } else {
+        hsla = hsla.darker(-lightness_shift)
+    };
+
+    
+    hsla.saturation = (hsla.saturation + rng.random_range(-0.1f32..=0.1)).clamp(0.0, 1.0);
+    let out: Srgba = hsla.into();
+    out.to_f32_array()
+}
+
 // convert chunk to a single mesh (greedily)
-pub fn build_chunk_mesh(chunk: &Chunk) -> Mesh {
+pub fn build_chunk_mesh(chunk_map: &ChunkMap, chunk_pos: IVec3) -> Mesh {
+
+    let mut rng = rand::rng();
+
+    let chunk = chunk_map.chunks.get(&chunk_pos).expect("chunk must exist to be meshed");
+
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
@@ -179,12 +230,15 @@ pub fn build_chunk_mesh(chunk: &Chunk) -> Mesh {
                     continue;
                 }
                 for (dir, corners, normal) in FACES.iter() {
-                    let neighbour = chunk.get(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z);
+                    // local chunk coordinate NOTE: this can be outside of the CHUNK_SIZE range
+                    let local_coord = IVec3::new(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z);
+                    let neighbour = get_voxel(chunk_map, chunk_pos, local_coord);
                     if neighbour != Voxel::Air {
                         continue;
                     }
                     let base = positions.len() as u32;
-                    let colour = palette_color(voxel);
+                    let mut colour = palette_color(voxel);
+                    colour = jitter_colour(colour, &mut rng);
 
                     for corner in corners {
                         positions.push([
@@ -226,9 +280,22 @@ pub fn spawn_chunk(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     terrain_noise: Res<TerrainNoise>,
+    mut chunk_map: ResMut<ChunkMap>,
 ) {
-    let seed: u32 = 0;
-    let render_distance = 0;
+    let render_distance = 2;
+
+    // because building the chunks meshes relies on the neighbour chunks existing we must generate all the neighbouring chunks first
+
+    for cx in -render_distance..=render_distance {
+        for cz in -render_distance..=render_distance {
+            for cy in -render_distance..=render_distance {
+                let chunk_position = IVec3::new(cx, cy, cz);
+                let chunk = generate_terrain(chunk_position, &terrain_noise);
+                chunk_map.chunks.insert(chunk_position, chunk);
+            }
+        }
+    }
+
 
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 1.0, 1.0),
@@ -237,134 +304,20 @@ pub fn spawn_chunk(
 
     for cx in -render_distance..=render_distance {
         for cz in -render_distance..=render_distance {
-            let chunk_position = IVec3::new(cx, 0, cz);
-            let chunk = generate_terrain(chunk_position, 0, &terrain_noise);
-            let mesh = build_chunk_mesh(&chunk);
-            let world_offset = (chunk_position * CHUNK_SIZE as i32).as_vec3();
-            commands.spawn((
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material.clone()),
-                Transform::from_translation(world_offset),
-                chunk,
-            ));
-        }
-    }
-}
-
-
-
-// **************      claude voronoi test ***************************** ///
-
-/// Deterministic per-cell jitter in 3D, same hashing trick as before.
-fn hash3(x: i32, y: i32, z: i32, seed: u32) -> Vec3 {
-    let mut n = (x.wrapping_mul(374761393))
-        .wrapping_add(y.wrapping_mul(668265263))
-        .wrapping_add(z.wrapping_mul(2147483647))
-        .wrapping_add(seed as i32) as u32;
-    n = (n ^ (n >> 13)).wrapping_mul(1274126177);
-    let fx = ((n & 0xffff) as f32 / 65535.0) - 0.5;
-    n = n.wrapping_mul(2246822519);
-    let fy = (((n >> 16) & 0xffff) as f32 / 65535.0) - 0.5;
-    n = n.wrapping_mul(3266489917);
-    let fz = ((n & 0xffff) as f32 / 65535.0) - 0.5;
-    Vec3::new(fx, fy, fz)
-}
-
-/// Returns (distance to nearest point, distance to second-nearest point).
-/// Searches the 3x3x3 neighbourhood of cells around the sample position.
-pub fn voronoi3d(pos: Vec3, cell_size: f32, seed: u32) -> (f32, f32) {
-    let cell = (pos / cell_size).floor().as_ivec3();
-
-    let mut nearest = f32::MAX;
-    let mut second = f32::MAX;
-
-    for dz in -1..=1 {
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                let ix = cell.x + dx;
-                let iy = cell.y + dy;
-                let iz = cell.z + dz;
-
-                let jitter = hash3(ix, iy, iz, seed);
-                let point = Vec3::new(ix as f32, iy as f32, iz as f32) * cell_size
-                    + (jitter + 0.5) * cell_size;
-
-                let d = pos.distance(point);
-                if d < nearest {
-                    second = nearest;
-                    nearest = d;
-                } else if d < second {
-                    second = d;
+            for cy in -render_distance..=render_distance {
+                let chunk_position = IVec3::new(cx, cy, cz);
+                let mesh = build_chunk_mesh(&chunk_map, chunk_position);
+                // some chunks may be full air or stone and have no mesh, it'll work but bevy will complain so:
+                if mesh.count_vertices() == 0 {
+                    continue
                 }
+                let world_offset = (chunk_position * CHUNK_SIZE as i32).as_vec3();
+                commands.spawn((
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_translation(world_offset),
+            ));
             }
         }
-    }
-
-    (nearest, second)
-}
-
-
-/// Layered sine waves at different frequencies/amplitudes — each octave adds
-/// finer detail at lower strength, so you get big rolling shapes plus small bumps
-/// instead of one uniform ripple.
-fn fbm_sine(x: f32, z: f32, octaves: u32) -> f32 {
-    let mut total = 0.0;
-    let mut amplitude = 6.0;
-    let mut frequency = 0.05;
-
-    for _ in 0..octaves {
-        total += amplitude * (x * frequency).sin() * (z * frequency).cos();
-        amplitude *= 0.5;
-        frequency *= 2.0;
-    }
-    total
-}
-
-/// World-space terrain surface height. Sea level is an absolute world constant,
-/// not chunk-relative (see earlier discussion) — this function doesn't know or
-/// care which chunk is asking.
-fn base_height(x: f32, z: f32) -> f32 {
-    let sea_level = 0.0;
-    sea_level + fbm_sine(x, z, 4)
-}
-
-pub fn density_at(pos: Vec3, cell_size: f32, seed: u32) -> f32 {
-    // Hard ceiling: absolutely nothing survives above this, no matter what
-    // the noise says. Stops runaway floating debris outright.
-    let sky_ceiling = 48.0;
-    if pos.y > sky_ceiling {
-        return -1.0;
-    }
-
-    // --- Base terrain field ---
-    // Positive below the rolling-hill surface, negative above it.
-    // This alone would give you the sine-hills-only terrain from earlier.
-    let terrain_density = base_height(pos.x, pos.z) - pos.y;
-
-    // --- Height bias, layered on top of the terrain field itself ---
-    // Steeper punishment above ground than below, so noise can't easily
-    // fight its way into producing solid stuff mid-air, while still leaving
-    // caves free to exist underground.
-    let dy = base_height(pos.x, pos.z) - pos.y;
-    let bias = if dy < 0.0 { dy * 0.4 } else { dy * 0.05 };
-    let terrain_density = terrain_density + bias;
-
-    // --- Cave carving field (Voronoi) ---
-    // f1 = distance to nearest feature point. Near a point (small f1) = "inside
-    // a tunnel," should be air. Far from any point (large f1) = solid rock.
-    let (f1, _f2) = voronoi3d(pos, cell_size, seed);
-    let cave_threshold = 3.0; // bigger = fatter tunnels
-    let cave_carve = f1 - cave_threshold;
-
-    // Only let caves carve well below the surface — stops weird pockmarks
-    // right at ground level / cave mouths punching straight through hillsides.
-    let cave_margin = 4.0;
-    if terrain_density > cave_margin {
-        // Below ground and deep enough: solid only if terrain says solid
-        // AND we're not inside a carved cavity (the AND/min logic).
-        terrain_density.min(cave_carve)
-    } else {
-        // Near the surface: skip cave carving entirely, just use terrain shape.
-        terrain_density
     }
 }

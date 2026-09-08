@@ -1,11 +1,9 @@
 use bevy::{
-    input::mouse::AccumulatedMouseMotion,
-    prelude::*,
-    window::{CursorGrabMode, CursorOptions},
+    camera::Exposure, input::mouse::AccumulatedMouseMotion, prelude::*, window::{CursorGrabMode, CursorOptions},
 };
 
 mod terrain;
-use crate::terrain::{CHUNK_SIZE, TerrainNoise, setup_terrain_noise, spawn_chunk};
+use crate::terrain::{CHUNK_SIZE, setup_terrain_noise, spawn_chunk};
 
 // camera
 
@@ -28,6 +26,7 @@ fn spawn_camera(mut commands: Commands) {
         )
         .looking_at(Vec3::new(8.0, 8.0, 8.0), Vec3::Y),
         CameraSensitivity::default(),
+        Exposure { ev100: 9.5},
         DistanceFog {
             color: Color::srgb(0.7, 0.75, 0.8),
             falloff: FogFalloff::Exponential { density: 0.01 },
@@ -40,7 +39,7 @@ use std::f32::consts::FRAC_PI_2;
 // move camera based on inputs
 // https://bevy.org/examples/camera/first-person-view-model/
 fn move_camera(
-    mut camera_query: Single<(&mut Transform, &CameraSensitivity), With<Camera3d>>,
+    camera_query: Single<(&mut Transform, &CameraSensitivity), With<Camera3d>>,
     accumulated_mouse_motion: Res<AccumulatedMouseMotion>,
     time: Res<Time>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
@@ -82,7 +81,7 @@ fn move_camera(
         direction -= right;
     }
 
-    let speed = 8.0;
+    let speed = 32.0;
     transform.translation += direction.normalize_or_zero() * speed * time.delta_secs();
 }
 
@@ -104,9 +103,6 @@ fn grab_mouse(
 
 fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    terrain_noise: Res<TerrainNoise>,
 
 ) {
     spawn_camera(commands.reborrow());
@@ -119,6 +115,7 @@ fn setup(
 
 fn main() {
     App::new()
+        .init_resource::<terrain::ChunkMap>()
         .add_plugins(DefaultPlugins)
         .add_systems(Startup, (setup_terrain_noise, setup, spawn_chunk).chain())
         .add_systems(Update, move_camera)
