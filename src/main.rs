@@ -1,5 +1,9 @@
 use bevy::{
-    camera::Exposure, input::mouse::AccumulatedMouseMotion, prelude::*, window::{CursorGrabMode, CursorOptions},
+    camera::Exposure,
+    input::mouse::AccumulatedMouseMotion,
+    mesh::PlaneMeshBuilder,
+    prelude::*,
+    window::{CursorGrabMode, CursorOptions},
 };
 
 mod terrain;
@@ -26,7 +30,7 @@ fn spawn_camera(mut commands: Commands) {
         )
         .looking_at(Vec3::new(8.0, 8.0, 8.0), Vec3::Y),
         CameraSensitivity::default(),
-        Exposure { ev100: 9.5},
+        Exposure { ev100: 9.5 },
         DistanceFog {
             color: Color::srgb(0.7, 0.75, 0.8),
             falloff: FogFalloff::Exponential { density: 0.01 },
@@ -101,6 +105,7 @@ fn grab_mouse(
     }
 }
 
+/*
 fn sea_level_gizmo( mut gizmos: Gizmos) {
     gizmos.grid(
       Isometry3d::new(Vec3::new(0.0, SEA_LEVEL, 0.0), Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
@@ -109,11 +114,52 @@ fn sea_level_gizmo( mut gizmos: Gizmos) {
     Color::srgba(0.2, 0.6, 1.0, 0.5),
     );
 }
+*/
 
-fn setup(
+use avian3d::prelude::*;
+
+fn debug_plane(
     mut commands: Commands,
-
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(50.0, 50.0))),
+        RigidBody::Static,
+        Collider::cuboid(50.0, 0.01, 50.0),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.1, 0.4, 0.9),
+            ..default()
+        })),
+    ));
+}
+
+fn spawn_debug_cubes(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    keys: Res<ButtonInput<KeyCode>>,
+) {
+    // only if d key pressed
+    if keys.just_pressed(KeyCode::KeyP) {
+        for x in (0..CHUNK_SIZE*3).step_by(4) {
+            for z in (0..CHUNK_SIZE*3).step_by(4) {
+                commands.spawn((
+                    Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: Color::srgb(0.7, 0.2, 0.1),
+                        ..default()
+                    })),
+                    Transform::from_xyz(x as f32, 100.0, z as f32),
+                    RigidBody::Dynamic,
+                    Collider::cuboid(1.0, 1.0, 1.0),
+                ));
+            }
+        }
+    }
+}
+
+fn setup(mut commands: Commands) {
     spawn_camera(commands.reborrow());
     // spawn light as standard material requires it
     commands.spawn((
@@ -126,9 +172,14 @@ fn main() {
     App::new()
         .init_resource::<terrain::ChunkMap>()
         .add_plugins(DefaultPlugins)
-        .add_systems(Startup, (setup_terrain_noise, setup, spawn_chunk).chain())
+        .add_plugins(PhysicsPlugins::default())
+        //.add_plugins(PhysicsDebugPlugin)
+        .add_systems(
+            Startup,
+            (setup_terrain_noise, setup, spawn_chunk, spawn_debug_cubes).chain(),
+        )
         .add_systems(Update, move_camera)
         .add_systems(Update, grab_mouse)
-        .add_systems(Update, sea_level_gizmo)
+        .add_systems(Update, spawn_debug_cubes)
         .run();
 }

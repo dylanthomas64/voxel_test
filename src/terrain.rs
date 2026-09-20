@@ -1,7 +1,9 @@
+use avian3d::prelude::*;
 use bevy::prelude::*;
 
 // chunk space constants
 pub const CHUNK_SIZE: usize = 32;
+pub const VOXEL_SIZE: usize = 1;
 
 // world space contstants
 pub const SEA_LEVEL: f32 = 0.0;
@@ -27,8 +29,16 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    // do these need to be associated functions or should they just be helpers??
     fn index(x: usize, y: usize, z: usize) -> usize {
         x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE
+    }
+
+    fn index_to_coord(n: usize) -> IVec3 {
+        let x = n % CHUNK_SIZE;
+        let y = (n / CHUNK_SIZE) % CHUNK_SIZE;
+        let z = n / (CHUNK_SIZE * CHUNK_SIZE);
+        IVec3::new(x as i32, y as i32, z as i32)
     }
 
     pub fn get(&self, x: i32, y: i32, z: i32) -> Voxel {
@@ -75,10 +85,9 @@ pub fn get_voxel(chunk_map: &ChunkMap, chunk_pos: IVec3, local: IVec3) -> Voxel 
     }
 }
 
-
 // noise
 
-use noise::{NoiseFn, Perlin, Fbm, MultiFractal};
+use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
 #[derive(Resource)]
 pub struct TerrainNoise {
@@ -90,8 +99,7 @@ impl TerrainNoise {
     pub fn new(seed: u32) -> Self {
         Self {
             _perlin: Perlin::new(seed),
-            fbm: Fbm::<Perlin>::new(seed)
-                .set_frequency(0.005)
+            fbm: Fbm::<Perlin>::new(seed).set_frequency(0.005),
         }
     }
 }
@@ -102,23 +110,21 @@ pub fn setup_terrain_noise(mut commands: Commands) {
 
 // helper function to determine height of terrain
 pub fn height_at(noise: &TerrainNoise, x: f32, z: f32) -> f32 {
-
     // fbm
-    let amplitude= 2.0 * CHUNK_SIZE as f32;
+    let amplitude = 2.0 * CHUNK_SIZE as f32;
     let val = noise.fbm.get([x as f64, z as f64]) as f32;
     let fbm = val * amplitude;
     let ridged = (1.0 - val.abs()) * amplitude;
-    fbm.lerp(ridged, noise._perlin.get([x as f64, z as f64]).clamp(0.0, 1.0) as f32)
+    fbm.lerp(
+        ridged,
+        noise._perlin.get([x as f64, z as f64]).clamp(0.0, 1.0) as f32,
+    )
 }
 // make gizmo actually make a plane mesh as it refreshes every fram otherwise......
 // ridged noise + fmb SEA_LEVEL + ((1.0 - val.abs()) * amplitude)
 // then hyrdaulic erosion
 
-
-
-
 pub fn generate_terrain(chunk_position: IVec3, terrain_noise: &TerrainNoise) -> Chunk {
-
     // create a cube of air voxels of volume CHUNK_SIZE**3
     let mut voxels = vec![Voxel::Air; CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE];
 
@@ -143,9 +149,7 @@ pub fn generate_terrain(chunk_position: IVec3, terrain_noise: &TerrainNoise) -> 
         }
     }
 
-    Chunk {
-        voxels,
-    }
+    Chunk { voxels }
 }
 
 use bevy::asset::RenderAssetUsages;
@@ -188,12 +192,11 @@ const FACES: [(IVec3, [[f32; 3]; 4], [f32; 3]); 6] = [
 //help functino to convert voxel type to a colour
 fn palette_color(voxel: Voxel) -> [f32; 4] {
     match voxel {
-        Voxel::Air => [0.0, 0.0, 0.0, 0.0], // never actually reached — Air voxels get `continue`d before this is called
+        Voxel::Air => [0.0, 0.0, 0.0, 0.0], // never actually reached
         Voxel::Solid(BlockType::Grass) => [0.42, 0.62, 0.26, 1.0],
         Voxel::Solid(BlockType::Dirt) => [0.40, 0.29, 0.18, 1.0],
         Voxel::Solid(BlockType::Stone) => [0.55, 0.55, 0.55, 1.0],
         Voxel::Solid(BlockType::Water) => [0.1, 0.1, 0.988, 0.3],
-        // ...one arm per block type
     }
 }
 
@@ -201,7 +204,6 @@ use bevy::color::{Hsla, Srgba};
 use rand::RngExt;
 
 fn jitter_colour(rgba: [f32; 4], rng: &mut impl RngExt) -> [f32; 4] {
-
     let mut hsla: Hsla = Srgba::from_f32_array(rgba).into();
 
     let lightness_shift = rng.random_range(-0.2f32..=0.2);
@@ -211,7 +213,6 @@ fn jitter_colour(rgba: [f32; 4], rng: &mut impl RngExt) -> [f32; 4] {
         hsla = hsla.darker(-lightness_shift)
     };
 
-    
     hsla.saturation = (hsla.saturation + rng.random_range(-0.2f32..=0.2)).clamp(0.0, 1.0);
     let out: Srgba = hsla.into();
     out.to_f32_array()
@@ -219,10 +220,12 @@ fn jitter_colour(rgba: [f32; 4], rng: &mut impl RngExt) -> [f32; 4] {
 
 // convert chunk to a single mesh (greedily)
 pub fn build_chunk_mesh(chunk_map: &ChunkMap, chunk_pos: IVec3) -> Mesh {
-
     let mut rng = rand::rng();
 
-    let chunk = chunk_map.chunks.get(&chunk_pos).expect("chunk must exist to be meshed");
+    let chunk = chunk_map
+        .chunks
+        .get(&chunk_pos)
+        .expect("chunk must exist to be meshed");
 
     let mut positions = Vec::new();
     let mut normals = Vec::new();
@@ -239,7 +242,8 @@ pub fn build_chunk_mesh(chunk_map: &ChunkMap, chunk_pos: IVec3) -> Mesh {
                 }
                 for (dir, corners, normal) in FACES.iter() {
                     // local chunk coordinate NOTE: this can be outside of the CHUNK_SIZE range
-                    let local_coord = IVec3::new(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z);
+                    let local_coord =
+                        IVec3::new(x as i32 + dir.x, y as i32 + dir.y, z as i32 + dir.z);
                     let neighbour = get_voxel(chunk_map, chunk_pos, local_coord);
                     if neighbour != Voxel::Air {
                         continue;
@@ -282,6 +286,22 @@ pub fn build_chunk_mesh(chunk_map: &ChunkMap, chunk_pos: IVec3) -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+// local colliders
+fn build_chunk_collider(chunk_map: &ChunkMap, chunk_pos: IVec3) -> Collider {
+    let chunk = chunk_map
+        .chunks
+        .get(&chunk_pos)
+        .expect("chunk must exist to be have a collider");
+    let solid_voxels: Vec<IVec3> = chunk
+        .voxels
+        .iter()
+        .enumerate()
+        .filter(|(_, voxel)| **voxel != Voxel::Air)
+        .map(|(n, _)| Chunk::index_to_coord(n))
+        .collect();
+    Collider::voxels(Vec3::splat(1.0), &solid_voxels)
+}
+
 // spawn the chunk into the world
 pub fn spawn_chunk(
     mut commands: Commands,
@@ -290,8 +310,8 @@ pub fn spawn_chunk(
     terrain_noise: Res<TerrainNoise>,
     mut chunk_map: ResMut<ChunkMap>,
 ) {
-    let xz_render_distance = 4;
-    let y_render_distance = 4;
+    let xz_render_distance = 3;
+    let y_render_distance = 3;
 
     // because building the chunks meshes relies on the neighbour chunks existing we must generate all the neighbouring chunks first
 
@@ -305,7 +325,6 @@ pub fn spawn_chunk(
         }
     }
 
-
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 1.0, 1.0),
         ..default()
@@ -316,16 +335,20 @@ pub fn spawn_chunk(
             for cy in -y_render_distance..=y_render_distance {
                 let chunk_position = IVec3::new(cx, cy, cz);
                 let mesh = build_chunk_mesh(&chunk_map, chunk_position);
+
                 // some chunks may be full air or stone and have no mesh, it'll work but bevy will complain so:
                 if mesh.count_vertices() == 0 {
-                    continue
+                    continue;
                 }
                 let world_offset = (chunk_position * CHUNK_SIZE as i32).as_vec3();
+
                 commands.spawn((
                     Mesh3d(meshes.add(mesh)),
                     MeshMaterial3d(material.clone()),
                     Transform::from_translation(world_offset),
-            ));
+                    RigidBody::Static,
+                    build_chunk_collider(&chunk_map, chunk_position), // builds chunks locally but the transform componet above will move it so OK
+                ));
             }
         }
     }
